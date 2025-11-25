@@ -1413,6 +1413,14 @@ export default function DashboardPage() {
                     context="raised"
                     onUpdateStatus={updateTicketStatus}
                     onAcceptTicket={acceptTicket}
+                    onViewLink={(url) => {
+                      setViewLinkUrl(url)
+                      setShowViewLinkModal(true)
+                    }}
+                    onViewAttachment={(url) => {
+                      setViewAttachmentUrl(url)
+                      setShowViewAttachmentModal(true)
+                    }}
                   />
                 ))
               )}
