@@ -627,6 +627,90 @@ export default function DashboardPage() {
   }
 
   const updateTicketStatus = async (ticketName: string, status: string, notes: string) => {
+    const now = new Date().toISOString()
+
+    // Optimistic update: immediately update the UI
+    setTickets(prevTickets => {
+      const updateTicketInArray = (arr: Ticket[]) => 
+        arr.map(t => t.name === ticketName ? { ...t, status, notes, status_update_latest_time: now } : t)
+      
+      // If status is "Accepted", we need to move it to archived
+      if (status === "Accepted") {
+        // Find the ticket in any active tab
+        let foundTicket: Ticket | null = null
+        let sourceArray: 'raised' | 'assigned' | 'selfAssigned' | null = null
+
+        const raisedIndex = prevTickets.raised.findIndex(t => t.name === ticketName)
+        if (raisedIndex !== -1) {
+          foundTicket = prevTickets.raised[raisedIndex]
+          sourceArray = 'raised'
+        } else {
+          const assignedIndex = prevTickets.assigned.findIndex(t => t.name === ticketName)
+          if (assignedIndex !== -1) {
+            foundTicket = prevTickets.assigned[assignedIndex]
+            sourceArray = 'assigned'
+          } else {
+            const selfIndex = prevTickets.selfAssigned.findIndex(t => t.name === ticketName)
+            if (selfIndex !== -1) {
+              foundTicket = prevTickets.selfAssigned[selfIndex]
+              sourceArray = 'selfAssigned'
+            }
+          }
+        }
+
+        if (foundTicket) {
+          const acceptedTicket: Ticket = {
+            ...foundTicket,
+            status: 'Accepted',
+            notes,
+            status_update_latest_time: now
+          }
+
+          const updatedRaised = sourceArray === 'raised' 
+            ? prevTickets.raised.filter(t => t.name !== ticketName)
+            : prevTickets.raised
+
+          const updatedAssigned = sourceArray === 'assigned'
+            ? prevTickets.assigned.filter(t => t.name !== ticketName)
+            : prevTickets.assigned
+
+          const updatedSelf = sourceArray === 'selfAssigned'
+            ? prevTickets.selfAssigned.filter(t => t.name !== ticketName)
+            : prevTickets.selfAssigned
+
+          const updatedArchived = [acceptedTicket, ...prevTickets.archived].sort((a, b) => {
+            const getAcceptanceDate = (t: Ticket) => {
+              if (t.action_status && t.action_status.length > 0) {
+                const acceptedAction = t.action_status.find(action => action.status === "Accepted")
+                if (acceptedAction) {
+                  return new Date(acceptedAction.status_update_latest_time || 0)
+                }
+              }
+              return new Date(t.creation || t.status_update_latest_time || 0)
+            }
+            return getAcceptanceDate(b).getTime() - getAcceptanceDate(a).getTime()
+          })
+
+          return {
+            raised: updatedRaised,
+            assigned: updatedAssigned,
+            selfAssigned: updatedSelf,
+            archived: updatedArchived,
+            reportingManager: prevTickets.reportingManager
+          }
+        }
+      }
+
+      // For non-Accepted status, just update in place
+      return {
+        raised: updateTicketInArray(prevTickets.raised),
+        assigned: updateTicketInArray(prevTickets.assigned),
+        selfAssigned: updateTicketInArray(prevTickets.selfAssigned),
+        archived: prevTickets.archived,
+        reportingManager: updateTicketInArray(prevTickets.reportingManager)
+      }
+    })
+
     try {
       const response = await fetch(`/api/tickets/${ticketName}`, {
         method: 'PUT',
@@ -641,16 +725,116 @@ export default function DashboardPage() {
       })
 
       if (response.ok) {
+        // Refresh data in background to ensure consistency
         await loadTickets(user)
       } else {
+        // Revert optimistic update on failure
+        await loadTickets(user)
         throw new Error('Failed to update ticket')
       }
     } catch (error) {
+      // Revert optimistic update on error
+      await loadTickets(user)
       alert('Update failed: ' + error)
     }
   }
 
   const acceptTicket = async (ticketName: string, level: string, notes: string) => {
+    // Convert level to rating (L1=1, L2=2, etc.)
+    const levelToRating: { [key: string]: number } = {
+      'L1': 1,
+      'L2': 2,
+      'L3': 3,
+      'L4': 4,
+      'L5': 5
+    }
+    const rating = levelToRating[level] || 1
+    const now = new Date().toISOString()
+
+    // Optimistic update: immediately move ticket to archived tab
+    setTickets(prevTickets => {
+      // Find the ticket in any of the active tabs
+      let foundTicket: Ticket | null = null
+      let sourceArray: 'raised' | 'assigned' | 'selfAssigned' | null = null
+
+      // Search in raised
+      const raisedIndex = prevTickets.raised.findIndex(t => t.name === ticketName)
+      if (raisedIndex !== -1) {
+        foundTicket = prevTickets.raised[raisedIndex]
+        sourceArray = 'raised'
+      } else {
+        // Search in assigned
+        const assignedIndex = prevTickets.assigned.findIndex(t => t.name === ticketName)
+        if (assignedIndex !== -1) {
+          foundTicket = prevTickets.assigned[assignedIndex]
+          sourceArray = 'assigned'
+        } else {
+          // Search in selfAssigned
+          const selfIndex = prevTickets.selfAssigned.findIndex(t => t.name === ticketName)
+          if (selfIndex !== -1) {
+            foundTicket = prevTickets.selfAssigned[selfIndex]
+            sourceArray = 'selfAssigned'
+          }
+        }
+      }
+
+      if (!foundTicket) {
+        // Ticket not found, return unchanged
+        return prevTickets
+      }
+
+      // Create updated ticket with Accepted status
+      const newActionStatus = {
+        status: 'Accepted',
+        rating,
+        status_update_latest_time: now,
+        updated_by: user,
+        notes
+      }
+
+      const acceptedTicket: Ticket = {
+        ...foundTicket,
+        status: 'Accepted',
+        status_update_latest_time: now,
+        action_status: [...(foundTicket.action_status || []), newActionStatus]
+      }
+
+      // Remove from source array and add to archived
+      const updatedRaised = sourceArray === 'raised' 
+        ? prevTickets.raised.filter(t => t.name !== ticketName)
+        : prevTickets.raised
+
+      const updatedAssigned = sourceArray === 'assigned'
+        ? prevTickets.assigned.filter(t => t.name !== ticketName)
+        : prevTickets.assigned
+
+      const updatedSelf = sourceArray === 'selfAssigned'
+        ? prevTickets.selfAssigned.filter(t => t.name !== ticketName)
+        : prevTickets.selfAssigned
+
+      // Add to archived and sort by acceptance date (newest first)
+      const updatedArchived = [acceptedTicket, ...prevTickets.archived].sort((a, b) => {
+        const getAcceptanceDate = (t: Ticket) => {
+          if (t.action_status && t.action_status.length > 0) {
+            const acceptedAction = t.action_status.find(action => action.status === "Accepted")
+            if (acceptedAction) {
+              return new Date(acceptedAction.status_update_latest_time || 0)
+            }
+          }
+          return new Date(t.creation || t.status_update_latest_time || 0)
+        }
+        return getAcceptanceDate(b).getTime() - getAcceptanceDate(a).getTime()
+      })
+
+      return {
+        raised: updatedRaised,
+        assigned: updatedAssigned,
+        selfAssigned: updatedSelf,
+        archived: updatedArchived,
+        reportingManager: prevTickets.reportingManager
+      }
+    })
+
     try {
       const response = await fetch(`/api/tickets/${ticketName}/accept`, {
         method: 'POST',
@@ -665,12 +849,17 @@ export default function DashboardPage() {
       })
 
       if (response.ok) {
+        // Refresh data in background to ensure consistency
         await loadTickets(user)
         await calculateAvgRating()
       } else {
+        // Revert optimistic update on failure
+        await loadTickets(user)
         throw new Error('Failed to accept ticket')
       }
     } catch (error) {
+      // Revert optimistic update on error
+      await loadTickets(user)
       alert('Accept failed: ' + error)
     }
   }
