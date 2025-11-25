@@ -212,11 +212,13 @@ export default function DashboardPage() {
       })
       
       if (!response.ok) {
-        console.error('[Dashboard] Failed to fetch reportee tickets:', response.status)
+        const errorText = await response.text().catch(() => 'Unknown error')
+        console.error('[Dashboard] Failed to fetch reportee tickets:', response.status, errorText)
         return []
       }
       
       const data = await response.json()
+      console.log('[Dashboard] Reportee API response:', data)
       
       // Handle both array response and wrapped response
       let reporteeTickets: Ticket[] = []
@@ -226,6 +228,9 @@ export default function DashboardPage() {
         reporteeTickets = data
       } else if (Array.isArray(data.data)) {
         reporteeTickets = data.data
+      } else if (data.error) {
+        console.error('[Dashboard] Reportee API returned error:', data.error)
+        return []
       }
       
       console.log('[Dashboard] Loaded', reporteeTickets.length, 'reportee tickets')
@@ -253,12 +258,31 @@ export default function DashboardPage() {
       }
     }
     
-    const [raisedRes, assignedRes, selfRes, reporteeTickets] = await Promise.all([
+    const results = await Promise.allSettled([
       fetch(`/api/tickets?type=raised&user=${encodeURIComponent(currentUser)}${cacheBuster}`, fetchOptions),
       fetch(`/api/tickets?type=assigned&user=${encodeURIComponent(currentUser)}${cacheBuster}`, fetchOptions),
       fetch(`/api/tickets?type=self&user=${encodeURIComponent(currentUser)}${cacheBuster}`, fetchOptions),
       loadReporteeTickets(currentUser)
     ])
+    
+    // Extract results from Promise.allSettled
+    const raisedRes = results[0].status === 'fulfilled' ? results[0].value : { ok: false } as Response
+    const assignedRes = results[1].status === 'fulfilled' ? results[1].value : { ok: false } as Response
+    const selfRes = results[2].status === 'fulfilled' ? results[2].value : { ok: false } as Response
+    const reporteeTickets = results[3].status === 'fulfilled' ? results[3].value : []
+    
+    if (results[0].status === 'rejected') {
+      console.error('[Dashboard] Failed to load raised tickets:', results[0].reason)
+    }
+    if (results[1].status === 'rejected') {
+      console.error('[Dashboard] Failed to load assigned tickets:', results[1].reason)
+    }
+    if (results[2].status === 'rejected') {
+      console.error('[Dashboard] Failed to load self tickets:', results[2].reason)
+    }
+    if (results[3].status === 'rejected') {
+      console.error('[Dashboard] Failed to load reportee tickets:', results[3].reason)
+    }
 
     const [raised, assigned, self] = await Promise.all([
       raisedRes.ok ? raisedRes.json().catch(() => ({ data: [] })) : { data: [] },
